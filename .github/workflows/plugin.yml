@@ -1,0 +1,99 @@
+# The CI/CD pipeline every Enkind plugin repository calls. Pull requests and
+# pushes run the checks. A push to main publishes a dev prerelease when its
+# commits warrant one and deploys the development environment. A manual run on
+# main releases a stable version: production is deployed and probed before the
+# GitHub release and the production branch are published.
+#
+# The caller grants `contents: write` and passes `secrets: inherit`, and the
+# repository provides plugin-release.json, .nvmrc, and pnpm's packageManager
+# field, plus `development` and `production` environments that each hold
+# VERCEL_TOKEN, VERCEL_PROJECT_ID, and MCP_URL, with VERCEL_ORG_ID at the
+# repository level.
+name: Plugin
+
+on:
+  workflow_call:
+    inputs:
+      check:
+        description: Commands that validate the repository, run after install.
+        type: string
+        required: true
+      deploy:
+        description: Commands that deploy the checked-out tree to the environment's Vercel project.
+        type: string
+        default: npx --yes vercel@48.2.9 deploy --prod --yes --token "$VERCEL_TOKEN"
+      probe:
+        description: Commands that verify the deployed server at $MCP_URL.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - if: github.event_name != 'workflow_dispatch'
+        uses: enkind/.github/actions/plugin@v1
+        with:
+          step: commitlint
+          from: ${{ github.event.pull_request.base.sha || github.event.before }}
+          to: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: enkind/.github/actions/plugin@v1
+        with:
+          step: versions
+      - run: bash -c "$CHECK"
+        env:
+          CHECK: ${{ inputs.check }}
+
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && 'production' || 'development' }}
+      url: ${{ vars.MCP_URL }}
+    permissions:
+      contents: write
+    env:
+      RELEASE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && 'stable' || 'dev' }}
+      DEPLOY_COMMAND: ${{ inputs.deploy }}
+      PROBE_COMMAND: ${{ inputs.probe }}
+      MCP_URL: ${{ vars.MCP_URL }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GIT_AUTHOR_NAME: github-actions[bot]
+      GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      GIT_COMMITTER_NAME: github-actions[bot]
+      GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: enkind/.github/actions/plugin@v1
+        with:
+          step: release
+      - name: Deploy the development environment
+        if: env.RELEASE_CHANNEL == 'dev'
+        run: bash -c "$DEPLOY_COMMAND"
+      - name: Probe the live endpoint
+        if: env.RELEASE_CHANNEL == 'dev'
+        run: bash -c "$PROBE_COMMAND"

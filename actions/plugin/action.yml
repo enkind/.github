@@ -1,0 +1,40 @@
+name: Enkind plugin release tooling
+description: Commit checks, version checks, and semantic-release for an Enkind plugin repository, driven by its plugin-release.json.
+inputs:
+  step:
+    description: "commitlint, versions, or release"
+    required: true
+  from:
+    description: First commit of the range to lint (commitlint only)
+    required: false
+  to:
+    description: Last commit of the range to lint (commitlint only)
+    required: false
+runs:
+  using: composite
+  steps:
+    - name: Install the release tooling
+      if: inputs.step != 'versions'
+      shell: bash
+      run: npm ci --prefix "$GITHUB_ACTION_PATH/../.." --no-audit --no-fund --loglevel=error
+    - name: Commits follow Conventional Commits
+      if: inputs.step == 'commitlint'
+      shell: bash
+      run: |
+        tooling="$GITHUB_ACTION_PATH/../.."
+        range=(--from "$FROM" --to "$TO")
+        [[ "$FROM" =~ ^0+$ ]] && range=(--last)
+        "$tooling/node_modules/.bin/commitlint" --config "$tooling/commitlint.config.mjs" "${range[@]}" --verbose
+      env:
+        FROM: ${{ inputs.from }}
+        TO: ${{ inputs.to }}
+    - name: Versions are aligned
+      if: inputs.step == 'versions'
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/../../scripts/plugin-release.sh" versions -'
+    - name: Release
+      if: inputs.step == 'release'
+      shell: bash
+      run: |
+        tooling="$GITHUB_ACTION_PATH/../.."
+        "$tooling/node_modules/.bin/semantic-release" --extends "$tooling/plugin.release.config.mjs"
